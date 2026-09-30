@@ -1,0 +1,37 @@
+import { Controller, Get, Param, ParseIntPipe, UseGuards } from '@nestjs/common'
+import { AuthGuard } from '../common/auth.guard'
+import { OperationalService } from './operational.service'
+
+@Controller()
+export class OperationalController {
+  constructor(private readonly operational: OperationalService) {}
+
+  @Get('health')
+  health() {
+    return this.operational.health()
+  }
+
+  @Get('api/tv/overview')
+  @UseGuards(AuthGuard)
+  overview(): Promise<any> {
+    return this.operational.overview()
+  }
+
+
+  @Get('api/tv/manifest/:id')
+  manifestDetail(@Param('id', ParseIntPipe) id: number): Promise<any> {
+    return this.operational.manifestDetail(id)
+  }
+
+  @Get('api/tv/maintenance/:plate')
+  @UseGuards(AuthGuard)
+  maintenanceDetail(@Param('plate') plate: string): Promise<any> {
+    return this.operational.maintenanceDetail(plate)
+  }
+
+  @Get('api/tv/fleet-catalog')
+  @UseGuards(AuthGuard)
+  fleetCatalog() {
+    return this.operational.fleetCatalog()
+  }
+}

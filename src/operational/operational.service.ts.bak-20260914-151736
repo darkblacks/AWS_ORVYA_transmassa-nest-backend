@@ -1,0 +1,228 @@
+import { Injectable } from '@nestjs/common'
+import { ConfigService } from '@nestjs/config'
+import { RowDataPacket } from 'mysql2'
+import { OperationalStatus, Ownership } from '../common/types'
+import { DatabaseService } from '../database/database.service'
+
+interface FleetRow extends RowDataPacket {
+  plate: string
+  vehicleType?: string
+  lastManifestDate?: string
+}
+
+interface ManifestRow extends RowDataPacket {
+  id: number
+  veiculoPlaca: string
+  motorista_nome?: string
+  status?: string
+  data?: string
+  saida?: string
+  numero?: string | number
+  tipo_servico?: string
+  servico?: string
+  quantidadeDestinos?: number
+  totalPesoReal?: number
+  totalPesoTaxado?: number
+}
+
+@Injectable()
+export class OperationalService {
+  constructor(
+    private readonly db: DatabaseService,
+    private readonly config: ConfigService
+  ) {}
+
+  cleanPlate(value: unknown = ''): string {
+    return String(value ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '')
+  }
+
+  async health() {
+    const [mysqlOk, pgOk] = await Promise.all([
+      this.db.operational('SELECT 1 AS ok').then(() => true).catch(() => false),
+      this.db.panel('SELECT 1 AS ok').then(() => true).catch(() => false)
+    ])
+    return { ok: mysqlOk && pgOk, mysql: mysqlOk, panelDb: pgOk, service: 'transmassa-panel-api' }
+  }
+
+  async fleetCatalog() {
+    const fleet = await this.getFleet()
+    return fleet.map(item => ({
+      plate: item.plate,
+      vehicleType: item.vehicleType || 'Não identificado',
+      source: 'MYSQL'
+    }))
+  }
+
+  async overview() {
+    const [fleet, activeManifests, mappingRows] = await Promise.all([
+      this.getFleet(),
+      this.getActiveManifests(),
+      this.getMappingRows()
+    ])
+    const manifestByPlate = new Map(activeManifests.map(row => [this.cleanPlate(row.veiculoPlaca), row]))
+    const mappingByPlate = new Map(mappingRows.map(row => [row.plate, row]))
+
+    const vehicles = fleet.map(vehicle => {
+      const manifest = manifestByPlate.get(vehicle.plate) || null
+      const mapping = mappingByPlate.get(vehicle.plate)
+      const ownership = this.ownershipFromManifest(manifest)
+      const status = this.statusFor(manifest)
+
+      return {
+        plate: vehicle.plate,
+        vehicleType: mapping?.vehicle_type || vehicle.vehicleType || 'Não identificado',
+        fleetSource: 'MYSQL',
+        operationalStatus: status,
+        ownership: ownership.ownership,
+        thirdPartyName: ownership.thirdPartyName,
+        capacityKg: 0,
+        loadKg: this.loadKg(manifest),
+        utilizationPercent: null,
+        manifest: manifest ? this.manifestDto(manifest, mapping?.service_override || null) : null,
+        maintenance: null
+      }
+    })
+
+    const counts = {
+      total: vehicles.length,
+      available: vehicles.filter(v => v.operationalStatus === 'AVAILABLE').length,
+      committed: vehicles.filter(v => v.operationalStatus === 'COMMITTED').length,
+      inTransit: vehicles.filter(v => v.operationalStatus === 'IN_TRANSIT').length,
+      maintenance: vehicles.filter(v => v.operationalStatus === 'MAINTENANCE').length
+    }
+
+    return {
+      generatedAt: new Date().toISOString(),
+      source: { operational: 'MYSQL', panel: 'PostgreSQL' },
+      counts,
+      breakdowns: {
+        available: this.breakdown(vehicles, 'AVAILABLE'),
+        committed: this.breakdown(vehicles, 'COMMITTED'),
+        inTransit: this.breakdown(vehicles, 'IN_TRANSIT'),
+        maintenance: this.breakdown(vehicles, 'MAINTENANCE')
+      },
+      preferences: null,
+      activeFleetGroup: null,
+      vehicles
+    }
+  }
+
+  private async getFleet(): Promise<Array<{ plate: string; vehicleType: string }>> {
+    const discoveryDays = Number(this.config.get('FLEET_DISCOVERY_DAYS') || 365)
+    const rows = await this.db.operational<FleetRow>(
+      `SELECT UPPER(REPLACE(REPLACE(TRIM(m.veiculoPlaca), '-', ''), ' ', '')) AS plate,
+              MAX(m.data) AS lastManifestDate,
+              'Cavalo' AS vehicleType
+       FROM manifestos m
+       WHERE m.veiculoPlaca IS NOT NULL
+         AND TRIM(m.veiculoPlaca) <> ''
+         AND m.data >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+       GROUP BY plate
+       ORDER BY plate`,
+      [discoveryDays]
+    )
+    return rows
+      .map(row => ({ plate: this.cleanPlate(row.plate), vehicleType: String(row.vehicleType || 'Cavalo') }))
+      .filter(row => row.plate)
+  }
+
+  private async getActiveManifests(): Promise<ManifestRow[]> {
+    const windowDays = Number(this.config.get('OPERATIONAL_WINDOW_DAYS') || 7)
+    return this.db.operational<ManifestRow>(
+      `SELECT m.*
+       FROM manifestos m
+       INNER JOIN (
+         SELECT veiculoPlaca, MAX(id) AS max_id
+         FROM manifestos
+         WHERE data >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+           AND veiculoPlaca IS NOT NULL
+           AND TRIM(veiculoPlaca) <> ''
+           AND (
+             LOWER(status) LIKE '%pendente%'
+             OR LOWER(status) LIKE '%em trânsito%'
+             OR LOWER(status) LIKE '%em transito%'
+             OR LOWER(status) LIKE '%program%'
+             OR LOWER(status) LIKE '%aguard%'
+             OR LOWER(status) LIKE '%aberto%'
+           )
+         GROUP BY veiculoPlaca
+       ) latest ON latest.max_id = m.id`,
+      [windowDays]
+    )
+  }
+
+  private async getMappingRows(): Promise<Array<{ plate: string; vehicle_type: string | null; service_override: string | null }>> {
+    const result = await this.db.panel<{ plate: string; vehicle_type: string | null; service_override: string | null }>(
+      `SELECT m.plate, m.vehicle_type, m.service_override
+       FROM panel_fleet_group_members m
+       INNER JOIN panel_fleet_groups g ON g.id = m.group_id
+       WHERE g.slug = 'grupo-consolidado-alexandre'`
+    )
+    return result.rows
+  }
+
+  private statusFor(manifest: ManifestRow | null): OperationalStatus {
+    if (!manifest) return 'AVAILABLE'
+    const status = String(manifest.status || '').toLowerCase()
+    if (status.includes('program') || status.includes('aguard') || status.includes('pendente')) return 'COMMITTED'
+    return 'IN_TRANSIT'
+  }
+
+  private ownershipFromManifest(manifest: ManifestRow | null): { ownership: Ownership; thirdPartyName: string } {
+    const driver = String(manifest?.motorista_nome || '')
+    if (driver.includes(' - ')) {
+      return { ownership: 'THIRD_PARTY', thirdPartyName: driver.split(' - ').slice(1).join(' - ').trim() }
+    }
+    return { ownership: 'OWN', thirdPartyName: '' }
+  }
+
+  private manifestDto(manifest: ManifestRow, serviceOverride: string | null) {
+    const service = serviceOverride || String(manifest.tipo_servico || manifest.servico || 'Outros')
+    return {
+      id: manifest.id,
+      numero: manifest.numero || manifest.id,
+      data: manifest.data,
+      saida: manifest.saida,
+      status: manifest.status,
+      motorista: manifest.motorista_nome,
+      trailers: [],
+      quantidadeDestinos: Number(manifest.quantidadeDestinos || 0),
+      qtdNf: 0,
+      volumesNf: 0,
+      pesoKg: this.loadKg(manifest),
+      entregas: 0,
+      transferencias: service.toLowerCase().includes('transfer') ? 1 : 0,
+      coletas: service.toLowerCase().includes('coleta') ? 1 : 0,
+      service,
+      operationContext: {
+        label: service,
+        kind: this.operationKind(service),
+        details: []
+      },
+      destinationText: '',
+      transferBase: '',
+      transferDestination: '',
+      observacoes: ''
+    }
+  }
+
+  private operationKind(service: string): 'TRANSFER' | 'DISTRIBUTION' | 'COLLECTION' | 'OTHER' {
+    const normalized = service.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+    if (normalized.includes('distrib') || normalized.includes('lotacao')) return 'DISTRIBUTION'
+    if (normalized.includes('transfer')) return 'TRANSFER'
+    if (normalized.includes('coleta')) return 'COLLECTION'
+    return 'OTHER'
+  }
+
+  private loadKg(manifest: ManifestRow | null): number {
+    return Number(manifest?.totalPesoReal || manifest?.totalPesoTaxado || 0)
+  }
+
+  private breakdown(vehicles: Array<{ operationalStatus: OperationalStatus; vehicleType: string }>, status: OperationalStatus) {
+    const counts = new Map<string, number>()
+    for (const vehicle of vehicles.filter(item => item.operationalStatus === status)) {
+      counts.set(vehicle.vehicleType, (counts.get(vehicle.vehicleType) || 0) + 1)
+    }
+    return [...counts.entries()].map(([label, total]) => ({ label, total })).sort((a, b) => b.total - a.total)
+  }
+}

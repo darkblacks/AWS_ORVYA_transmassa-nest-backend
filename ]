@@ -1,0 +1,21 @@
+
+PORT=8080
+JWT_SECRET=servidororvya430vtransmassa
+JWT_EXPIRES_IN=12h
+CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+
+# Banco único do painel. Pode ser o PostgreSQL que ficará dono das tabelas próprias.
+PANEL_PG_HOST=127.0.0.1
+PANEL_PG_PORT=5432
+PANEL_PG_DATABASE=transmassa_panel
+PANEL_PG_USER=postgres
+PANEL_PG_PASSWORD=postgres
+
+# Banco operacional já existente. Se for MySQL, configure aqui.
+OPERATIONAL_MYSQL_HOST=127.0.0.1
+OPERATIONAL_MYSQL_PORT=3306
+OPERATIONAL_MYSQL_USER=transmassa
+OPERATIONAL_MYSQL_PASSWORD=transmassa
+OPERATIONAL_MYSQL_DATABASE=transmassa
+OPERATIONAL_WINDOW_DAYS=7
+FLEET_DISCOVERY_DAYS=365
