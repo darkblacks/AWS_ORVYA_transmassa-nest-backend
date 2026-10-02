@@ -13,6 +13,18 @@ interface MemberRow {
     notes: string | null;
     updated_at: Date;
 }
+interface MemberDto {
+    id: number;
+    group_id: number;
+    plate: string;
+    base_code: string | null;
+    driver_name: string | null;
+    vehicle_type: string | null;
+    owner_code: string | null;
+    service_override: string | null;
+    notes: string | null;
+    updated_at: Date;
+}
 export declare class FleetMappingService {
     private readonly db;
     private readonly branches;
@@ -44,31 +56,16 @@ export declare class FleetMappingService {
             is_system: boolean;
             is_shared: boolean;
         };
-        members: {
-            id: number;
-            group_id: number;
-            plate: string;
-            base_code: string | null;
-            driver_name: string | null;
-            vehicle_type: string | null;
-            owner_code: string | null;
-            service_override: string | null;
-            notes: string | null;
-            updated_at: Date;
-        }[];
+        members: MemberDto[];
     }>;
-    upsertMember(actor: AuthUser, groupId: number, plateParam: string, input: Partial<MemberRow>): Promise<{
-        id: number;
-        group_id: number;
-        plate: string;
-        base_code: string | null;
-        driver_name: string | null;
-        vehicle_type: string | null;
-        owner_code: string | null;
-        service_override: string | null;
-        notes: string | null;
-        updated_at: Date;
+    exportExcel(groupId: number): Promise<Buffer>;
+    excelTemplate(groupId: number): Promise<Buffer>;
+    importExcel(actor: AuthUser, groupId: number, fileBuffer: Buffer): Promise<{
+        total: number;
+        created: number;
+        updated: number;
     }>;
+    upsertMember(actor: AuthUser, groupId: number, plateParam: string, input: Partial<MemberRow>): Promise<MemberDto>;
     deleteMember(actor: AuthUser, groupId: number, plateParam: string): Promise<{
         ok: boolean;
     }>;
@@ -91,6 +88,11 @@ export declare class FleetMappingService {
             created_at: Date;
         }[];
     }>;
+    private buildExcel;
+    private normalizeHeader;
+    private cellText;
+    private findColumn;
+    private requireGroupName;
     private requireGroup;
     private findMember;
     private memberDto;

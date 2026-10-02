@@ -24,7 +24,7 @@ interface MemberRow {
   updated_at: Date
 }
 
-interface MemberDto {
+export interface MemberDto {
   id: number
   group_id: number
   plate: string
@@ -133,22 +133,27 @@ export class FleetMappingService {
     }
   }
 
-  async exportExcel(groupId: number): Promise<Buffer> {
+  async exportExcel(groupId: number): Promise<Uint8Array> {
     const data = await this.members(groupId)
     return this.buildExcel(data.group.name, data.members)
   }
 
-  async excelTemplate(groupId: number): Promise<Buffer> {
+  async excelTemplate(groupId: number): Promise<Uint8Array> {
     const groupName = await this.requireGroupName(groupId)
     return this.buildExcel(groupName, [])
   }
 
-  async importExcel(actor: AuthUser, groupId: number, fileBuffer: Buffer) {
+  async importExcel(actor: AuthUser, groupId: number, fileBuffer: Uint8Array) {
     await this.requireGroup(groupId)
 
     const workbook = new ExcelJS.Workbook()
     try {
-      await workbook.xlsx.load(fileBuffer)
+      // ExcelJS 4.4.0 tipa load() como ArrayBuffer, enquanto o Multer entrega
+      // Buffer/Uint8Array. Criamos um ArrayBuffer real para evitar conflito
+      // entre as tipagens modernas do Node e a definição antiga do ExcelJS.
+      const inputBuffer = new ArrayBuffer(fileBuffer.byteLength)
+      new Uint8Array(inputBuffer).set(fileBuffer)
+      await workbook.xlsx.load(inputBuffer)
     } catch {
       throw new BadRequestException({ detail: 'Não foi possível ler o XLSX. Baixe o modelo e tente novamente.' })
     }
@@ -449,7 +454,7 @@ export class FleetMappingService {
   private async buildExcel(
     groupName: string,
     members: MemberDto[]
-  ): Promise<Buffer> {
+  ): Promise<Uint8Array> {
     const bases = await this.baseCodes()
     const workbook = new ExcelJS.Workbook()
     workbook.creator = 'Transmassa Panel API'
@@ -539,7 +544,10 @@ export class FleetMappingService {
       }
     }
 
-    return workbook.xlsx.writeBuffer()
+    const outputBuffer = await workbook.xlsx.writeBuffer()
+    // StreamableFile aceita Uint8Array. Isso também evita expor o tipo Buffer
+    // incompatível declarado pelo ExcelJS 4.4.0.
+    return new Uint8Array(outputBuffer)
   }
 
   private normalizeHeader(value: string): string {

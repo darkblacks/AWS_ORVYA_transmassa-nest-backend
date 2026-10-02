@@ -14,10 +14,12 @@ var __param = (this && this.__param) || function (paramIndex, decorator) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.FleetMappingController = void 0;
 const common_1 = require("@nestjs/common");
+const platform_express_1 = require("@nestjs/platform-express");
 const auth_guard_1 = require("../common/auth.guard");
 const current_user_decorator_1 = require("../common/current-user.decorator");
 const fleet_mapping_dto_1 = require("./fleet-mapping.dto");
 const fleet_mapping_service_1 = require("./fleet-mapping.service");
+const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 let FleetMappingController = class FleetMappingController {
     mapping;
     constructor(mapping) {
@@ -31,6 +33,31 @@ let FleetMappingController = class FleetMappingController {
     }
     members(id) {
         return this.mapping.members(id);
+    }
+    async exportExcel(id) {
+        const buffer = await this.mapping.exportExcel(id);
+        return new common_1.StreamableFile(buffer, {
+            type: XLSX_MIME,
+            disposition: 'attachment; filename="fleet-mapping.xlsx"',
+            length: buffer.length
+        });
+    }
+    async excelTemplate(id) {
+        const buffer = await this.mapping.excelTemplate(id);
+        return new common_1.StreamableFile(buffer, {
+            type: XLSX_MIME,
+            disposition: 'attachment; filename="fleet-mapping-template.xlsx"',
+            length: buffer.length
+        });
+    }
+    async importExcel(user, id, file) {
+        if (!file?.buffer?.length) {
+            throw new common_1.BadRequestException({ detail: 'Envie um arquivo .xlsx no campo file.' });
+        }
+        if (file.originalname && !file.originalname.toLowerCase().endsWith('.xlsx')) {
+            throw new common_1.BadRequestException({ detail: 'O arquivo deve estar no formato .xlsx.' });
+        }
+        return this.mapping.importExcel(user, id, file.buffer);
     }
     upsertMember(user, id, plate, dto) {
         return this.mapping.upsertMember(user, id, plate, dto);
@@ -62,6 +89,30 @@ __decorate([
     __metadata("design:paramtypes", [Number]),
     __metadata("design:returntype", void 0)
 ], FleetMappingController.prototype, "members", null);
+__decorate([
+    (0, common_1.Get)('groups/:id/excel-export'),
+    __param(0, (0, common_1.Param)('id', common_1.ParseIntPipe)),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Number]),
+    __metadata("design:returntype", Promise)
+], FleetMappingController.prototype, "exportExcel", null);
+__decorate([
+    (0, common_1.Get)('groups/:id/excel-template'),
+    __param(0, (0, common_1.Param)('id', common_1.ParseIntPipe)),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Number]),
+    __metadata("design:returntype", Promise)
+], FleetMappingController.prototype, "excelTemplate", null);
+__decorate([
+    (0, common_1.Post)('groups/:id/excel-import'),
+    (0, common_1.UseInterceptors)((0, platform_express_1.FileInterceptor)('file', { limits: { fileSize: 10 * 1024 * 1024 } })),
+    __param(0, (0, current_user_decorator_1.CurrentUser)()),
+    __param(1, (0, common_1.Param)('id', common_1.ParseIntPipe)),
+    __param(2, (0, common_1.UploadedFile)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Number, Object]),
+    __metadata("design:returntype", Promise)
+], FleetMappingController.prototype, "importExcel", null);
 __decorate([
     (0, common_1.Put)('groups/:id/members/:plate'),
     __param(0, (0, current_user_decorator_1.CurrentUser)()),
